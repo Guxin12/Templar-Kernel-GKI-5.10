@@ -8007,6 +8007,10 @@ cpu_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
 	return &tg->css;
 }
 
+#ifdef CONFIG_UCLAMP_ASSIST
+static void uclamp_set(struct cgroup_subsys_state *css);
+#endif
+
 /* Expose task group only after completing cgroup initialization */
 static int cpu_cgroup_css_online(struct cgroup_subsys_state *css)
 {
@@ -8206,6 +8210,11 @@ static ssize_t cpu_uclamp_write(struct kernfs_open_file *of, char *buf,
 {
 	struct uclamp_request req;
 	struct task_group *tg;
+
+#ifdef CONFIG_UCLAMP_ASSIST
+	if (task_is_booster(current))
+		return nbytes;
+#endif
 
 	req = capacity_from_percent(buf);
 	if (req.ret)
