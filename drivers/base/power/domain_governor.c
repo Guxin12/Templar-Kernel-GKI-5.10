@@ -255,7 +255,7 @@ static bool cpu_power_down_ok(struct dev_pm_domain *pd)
 	struct generic_pm_domain *genpd = pd_to_genpd(pd);
 	struct cpuidle_device *dev;
 	ktime_t domain_wakeup, next_hrtimer;
-	ktime_t now = ktime_get();
+	// ktime_t now = ktime_get();
 	struct device *cpu_dev;
 	s64 cpu_constraint, global_constraint;
 	s64 idle_duration_ns;
