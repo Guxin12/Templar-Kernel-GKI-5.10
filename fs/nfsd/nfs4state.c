@@ -80,7 +80,7 @@ static u64 current_sessionid = 1;
 /* forward declarations */
 static bool check_for_locks(struct nfs4_file *fp, struct nfs4_lockowner *lowner);
 static void nfs4_free_ol_stateid(struct nfs4_stid *stid);
-static void nfsd4_end_grace(struct nfsd_net *nn);
+void nfsd4_end_grace(struct nfsd_net *nn);
 static void _free_cpntf_state_locked(struct nfsd_net *nn, struct nfs4_cpntf_state *cps);
 
 /* Locking: */
@@ -4066,11 +4066,11 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
 		goto out;
 	}
 	status = nfs_ok;
-	if (conf) {
+	if (conf) { /* case 1: callback update */
 		old = unconf;
 		unhash_client_locked(old);
 		nfsd4_change_callback(conf, &unconf->cl_cb_conn);
-	} else {
+	} else { /* case 3: normal case; new or rebooted client */
 		old = find_confirmed_client_by_name(&unconf->cl_name, nn);
 		if (old) {
 			status = nfserr_clid_inuse;
@@ -4086,14 +4086,10 @@ nfsd4_setclientid_confirm(struct svc_rqst *rqstp,
 				goto out;
 			}
 		}
-		status = get_client_locked(unconf);
-		if (status != nfs_ok) {
-			old = NULL;
-			goto out;
-		}
 		move_to_confirmed(unconf);
 		conf = unconf;
 	}
+	get_client_locked(conf);
 	spin_unlock(&nn->client_lock);
 	nfsd4_probe_callback(conf);
 	spin_lock(&nn->client_lock);
@@ -5229,20 +5225,6 @@ nfsd4_process_open2(struct svc_rqst *rqstp, struct svc_fh *current_fh, struct nf
 		status = nfs4_check_deleg(cl, open, &dp);
 		if (status)
 			goto out;
-		if (dp && nfsd4_is_deleg_cur(open) &&
-				(dp->dl_stid.sc_file != fp)) {
-			/*
-			 * RFC8881 section 8.2.4 mandates the server to return
-			 * NFS4ERR_BAD_STATEID if the selected table entry does
-			 * not match the current filehandle. However returning
-			 * NFS4ERR_BAD_STATEID in the OPEN can cause the client
-			 * to repeatedly retry the operation with the same
-			 * stateid, since the stateid itself is valid. To avoid
-			 * this situation NFSD returns NFS4ERR_INVAL instead.
-			 */
-			status = nfserr_inval;
-			goto out;
-		}
 		stp = nfsd4_find_and_lock_existing_open(fp, open);
 	} else {
 		open->op_file = NULL;
@@ -5376,7 +5358,7 @@ out:
 	return status;
 }
 
-static void
+void
 nfsd4_end_grace(struct nfsd_net *nn)
 {
 	/* do nothing if grace period already ended */
@@ -5409,33 +5391,6 @@ nfsd4_end_grace(struct nfsd_net *nn)
 	 */
 }
 
-/**
- * nfsd4_force_end_grace - forcibly end the NFSv4 grace period
- * @nn: network namespace for the server instance to be updated
- *
- * Forces bypass of normal grace period completion, then schedules
- * the laundromat to end the grace period immediately. Does not wait
- * for the grace period to fully terminate before returning.
- *
- * Return values:
- *   %true: Grace termination schedule
- *   %false: No action was taken
- */
-bool nfsd4_force_end_grace(struct nfsd_net *nn)
-{
-	if (!nn->client_tracking_ops)
-		return false;
-	spin_lock(&nn->client_lock);
-	if (nn->grace_ended || !nn->client_tracking_active) {
-		spin_unlock(&nn->client_lock);
-		return false;
-	}
-	WRITE_ONCE(nn->grace_end_forced, true);
-	mod_delayed_work(laundry_wq, &nn->laundromat_work, 0);
-	spin_unlock(&nn->client_lock);
-	return true;
-}
-
 /*
  * If we've waited a lease period but there are still clients trying to
  * reclaim, wait a little longer to give them a chance to finish.
@@ -5445,8 +5400,6 @@ static bool clients_still_reclaiming(struct nfsd_net *nn)
 	time64_t double_grace_period_end = nn->boot_time +
 					   2 * nn->nfsd4_lease;
 
-	if (READ_ONCE(nn->grace_end_forced))
-		return false;
 	if (nn->track_reclaim_completes &&
 			atomic_read(&nn->nr_reclaim_complete) ==
 			nn->reclaim_str_hashtbl_size)
@@ -7402,8 +7355,6 @@ static int nfs4_state_create_net(struct net *net)
 	nn->unconf_name_tree = RB_ROOT;
 	nn->boot_time = ktime_get_real_seconds();
 	nn->grace_ended = false;
-	nn->grace_end_forced = false;
-	nn->client_tracking_active = false;
 	nn->nfsd4_manager.block_opens = true;
 	INIT_LIST_HEAD(&nn->nfsd4_manager.list);
 	INIT_LIST_HEAD(&nn->client_lru);
@@ -7470,10 +7421,6 @@ nfs4_state_start_net(struct net *net)
 		return ret;
 	locks_start_grace(net, &nn->nfsd4_manager);
 	nfsd4_client_tracking_init(net);
-	/* safe for laundromat to run now */
-	spin_lock(&nn->client_lock);
-	nn->client_tracking_active = true;
-	spin_unlock(&nn->client_lock);
 	if (nn->track_reclaim_completes && nn->reclaim_str_hashtbl_size == 0)
 		goto skip_grace;
 	printk(KERN_INFO "NFSD: starting %lld-second grace period (net %x)\n",
@@ -7522,11 +7469,6 @@ nfs4_state_shutdown_net(struct net *net)
 	struct list_head *pos, *next, reaplist;
 	struct nfsd_net *nn = net_generic(net, nfsd_net_id);
 
-	unregister_shrinker(&nn->nfsd_client_shrinker);
-	cancel_work_sync(&nn->nfsd_shrinker_work);
-	spin_lock(&nn->client_lock);
-	nn->client_tracking_active = false;
-	spin_unlock(&nn->client_lock);
 	cancel_delayed_work_sync(&nn->laundromat_work);
 	locks_end_grace(&nn->nfsd4_manager);
 

@@ -1930,9 +1930,8 @@ static void cpu_enable_mte(struct arm64_cpu_capabilities const *cap)
 	if (!cleared_zero_page) {
 		cleared_zero_page = true;
 		mte_clear_page_tags(lm_alias(empty_zero_page));
-
 	}
-	
+
 	kasan_init_hw_tags_cpu();
 }
 #endif /* CONFIG_ARM64_MTE */

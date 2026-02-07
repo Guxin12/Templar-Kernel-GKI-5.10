@@ -19,6 +19,8 @@
 #include <asm/processor.h>
 #include <linux/osq_lock.h>
 #include <linux/debug_locks.h>
+#include <linux/cleanup.h>
+#include <linux/android_vendor.h>
 
 struct ww_acquire_ctx;
 

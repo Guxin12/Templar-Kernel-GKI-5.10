@@ -4031,7 +4031,10 @@ out:
 	hba->uic_async_done = NULL;
 	if (reenable_intr)
 		ufshcd_enable_intr(hba, UIC_COMMAND_COMPL);
-	if (ret) {
+	if (ret && !hba->pm_op_in_progress) {
+		dev_err(hba->dev,
+			"%s: Changing link power status failed (%d). Scheduling error handler\n",
+			__func__, ret);
 		ufshcd_set_link_broken(hba);
 		ufshcd_schedule_eh_work(hba);
 	}
@@ -6074,9 +6077,12 @@ static void ufshcd_err_handler(struct work_struct *work)
 
 	ufshcd_err_handling_prepare(hba);
 
+	/* Complete requests that have door-bell cleared by h/w */
+	ufshcd_complete_requests(hba);
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	ufshcd_set_eh_in_progress(hba);
-	ufshcd_scsi_block_requests(hba);
+	if (hba->ufshcd_state != UFSHCD_STATE_ERROR)
+		hba->ufshcd_state = UFSHCD_STATE_RESET;
 	/*
 	 * A full reset and restore might have happened after preparation
 	 * is finished, double check whether we should stop.

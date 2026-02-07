@@ -30,6 +30,8 @@
 #include <linux/device/bus.h>
 #include <linux/device/class.h>
 #include <linux/device/driver.h>
+#include <linux/cleanup.h>
+#include <linux/android_kabi.h>
 #include <asm/device.h>
 
 struct device;
