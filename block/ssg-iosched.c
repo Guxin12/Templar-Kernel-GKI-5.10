@@ -39,14 +39,14 @@ extern void blk_sec_stats_account_io_done(
 #define blk_sec_stats_account_io_done(rq, size, tgid, name, time) do {} while(0)
 #endif
 
-#define MAX_ASYNC_WRITE_RQS	3
+#define MAX_ASYNC_WRITE_RQS	6
 
-static const int read_expire = 800;		/* max time before a read is submitted. */
-static const int write_expire = 16 * HZ;		/* ditto for writes, these limits are SOFT! */
-static const int max_write_starvation = 4;	/* max times reads can starve a write */
-static const int congestion_threshold = 40;	/* percentage of congestion threshold */
-static const int max_tgroup_io_ratio = 20;	/* maximum service ratio for each thread group */
-static const int max_async_write_ratio = 6;	/* maximum service ratio for async write */
+static const int read_expire = 1200;		/* max time before a read is submitted. */
+static const int write_expire = 20 * HZ;		/* ditto for writes, these limits are SOFT! */
+static const int max_write_starvation = 6;	/* max times reads can starve a write */
+static const int congestion_threshold = 50;	/* percentage of congestion threshold */
+static const int max_tgroup_io_ratio = 15;	/* maximum service ratio for each thread group */
+static const int max_async_write_ratio = 8;	/* maximum service ratio for async write */
 
 struct ssg_request_info {
 	pid_t tgid;
@@ -599,13 +599,13 @@ static int ssg_init_queue(struct request_queue *q, struct elevator_type *e)
     INIT_LIST_HEAD(&ssg->fifo_list[WRITE]);
     ssg->sort_list[READ] = RB_ROOT;
     ssg->sort_list[WRITE] = RB_ROOT;
-    ssg->fifo_expire[READ]  = msecs_to_jiffies(400);
-    ssg->fifo_expire[WRITE] = msecs_to_jiffies(6000);
-    ssg->max_write_starvation = 4;
+    ssg->fifo_expire[READ]  = msecs_to_jiffies(1200);
+    ssg->fifo_expire[WRITE] = msecs_to_jiffies(20000);
+    ssg->max_write_starvation = 6;
     ssg->front_merges = 1;
-    blk_queue_max_hw_sectors(q, 24 * 8);
-    q->backing_dev_info->ra_pages = 24;
-    blk_queue_rq_timeout(q, 2500);
+    blk_queue_max_hw_sectors(q, 128 * 8);
+    q->backing_dev_info->ra_pages = 128;
+    blk_queue_rq_timeout(q, 5000);
 
     atomic_set(&ssg->allocated_rqs, 0);
     atomic_set(&ssg->async_write_rqs, 0);
