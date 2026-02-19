@@ -47,6 +47,7 @@ struct f2fs_attr {
 			 const char *, size_t);
 	int struct_type;
 	int offset;
+	int size;
 	int id;
 };
 
@@ -280,11 +281,30 @@ static ssize_t main_blkaddr_show(struct f2fs_attr *a,
 			(unsigned long long)MAIN_BLKADDR(sbi));
 }
 
+static ssize_t __sbi_show_value(struct f2fs_attr *a,
+		struct f2fs_sb_info *sbi, char *buf,
+		unsigned char *value)
+{
+	switch (a->size) {
+	case 1:
+		return sysfs_emit(buf, "%u\n", *(u8 *)value);
+	case 2:
+		return sysfs_emit(buf, "%u\n", *(u16 *)value);
+	case 4:
+		return sysfs_emit(buf, "%u\n", *(u32 *)value);
+	case 8:
+		return sysfs_emit(buf, "%llu\n", *(u64 *)value);
+	default:
+		f2fs_bug_on(sbi, 1);
+		return sysfs_emit(buf,
+				"show sysfs node value with wrong type\n");
+	}
+}
+
 static ssize_t f2fs_sbi_show(struct f2fs_attr *a,
 			struct f2fs_sb_info *sbi, char *buf)
 {
 	unsigned char *ptr = NULL;
-	unsigned int *ui;
 
 	ptr = __struct_ptr(sbi, a->struct_type);
 	if (!ptr)
@@ -347,9 +367,7 @@ static ssize_t f2fs_sbi_show(struct f2fs_attr *a,
 			sbi->gc_reclaimed_segs[sbi->gc_segment_mode]);
 	}
 
-	ui = (unsigned int *)(ptr + a->offset);
-
-	return sprintf(buf, "%u\n", *ui);
+	return __sbi_show_value(a, sbi, buf, ptr + a->offset);
 }
 
 static ssize_t __sbi_store(struct f2fs_attr *a,
@@ -532,80 +550,6 @@ out:
 		return count;
 	}
 
-#ifdef CONFIG_F2FS_FS_COMPRESSION
-	if (!strcmp(a->attr.name, "compr_written_block") ||
-		!strcmp(a->attr.name, "compr_saved_block")) {
-		if (t != 0)
-			return -EINVAL;
-		sbi->compr_written_block = 0;
-		sbi->compr_saved_block = 0;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "compr_new_inode")) {
-		if (t != 0)
-			return -EINVAL;
-		sbi->compr_new_inode = 0;
-		return count;
-	}
-#endif
-
-	if (!strcmp(a->attr.name, "atgc_candidate_ratio")) {
-		if (t > 100)
-			return -EINVAL;
-		sbi->am.candidate_ratio = t;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "atgc_age_weight")) {
-		if (t > 100)
-			return -EINVAL;
-		sbi->am.age_weight = t;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "gc_segment_mode")) {
-		if (t < MAX_GC_MODE)
-			sbi->gc_segment_mode = t;
-		else
-			return -EINVAL;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "gc_reclaimed_segments")) {
-		if (t != 0)
-			return -EINVAL;
-		sbi->gc_reclaimed_segs[sbi->gc_segment_mode] = 0;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "hot_data_age_threshold")) {
-		if (t == 0 || t >= sbi->warm_data_age_threshold)
-			return -EINVAL;
-		if (t == *ui)
-			return count;
-		*ui = (unsigned int)t;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "warm_data_age_threshold")) {
-		if (t == 0 || t <= sbi->hot_data_age_threshold)
-			return -EINVAL;
-		if (t == *ui)
-			return count;
-		*ui = (unsigned int)t;
-		return count;
-	}
-
-	if (!strcmp(a->attr.name, "last_age_weight")) {
-		if (t > 100)
-			return -EINVAL;
-		if (t == *ui)
-			return count;
-		*ui = (unsigned int)t;
-		return count;
-	}
-
 	*ui = (unsigned int)t;
 
 	return count;
@@ -702,19 +646,21 @@ static struct f2fs_attr f2fs_attr_sb_##_name = {		\
 	.id	= F2FS_FEATURE_##_feat,				\
 }
 
-#define F2FS_ATTR_OFFSET(_struct_type, _name, _mode, _show, _store, _offset) \
+#define F2FS_ATTR_OFFSET(_struct_type, _name, _mode, _show, _store, _offset, _size) \
 static struct f2fs_attr f2fs_attr_##_name = {			\
 	.attr = {.name = __stringify(_name), .mode = _mode },	\
 	.show	= _show,					\
 	.store	= _store,					\
 	.struct_type = _struct_type,				\
-	.offset = _offset					\
+	.offset = _offset,					\
+	.size = _size						\
 }
 
 #define F2FS_RW_ATTR(struct_type, struct_name, name, elname)	\
 	F2FS_ATTR_OFFSET(struct_type, name, 0644,		\
 		f2fs_sbi_show, f2fs_sbi_store,			\
-		offsetof(struct struct_name, elname))
+		offsetof(struct struct_name, elname),		\
+		sizeof_field(struct struct_name, elname))
 
 #define F2FS_GENERAL_RO_ATTR(name) \
 static struct f2fs_attr f2fs_attr_##name = __ATTR(name, 0444, name##_show, NULL)
@@ -725,6 +671,7 @@ static struct f2fs_attr f2fs_attr_##_name = {			\
 	.show = f2fs_sbi_show,					\
 	.struct_type = _struct_type,				\
 	.offset = offsetof(struct _struct_name, _elname),       \
+	.size = sizeof_field(struct _struct_name, _elname),	\
 }
 
 F2FS_RW_ATTR(GC_THREAD, f2fs_gc_kthread, gc_urgent_sleep_time,
