@@ -478,7 +478,8 @@ struct regulator_dev {
 
 	/* time when this regulator was disabled last time */
 	unsigned long last_off_jiffy;
-	ANDROID_KABI_USE(1, ktime_t last_off);
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 struct regulator_dev *
