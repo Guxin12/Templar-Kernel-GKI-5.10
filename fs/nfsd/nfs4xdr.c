@@ -573,32 +573,68 @@ static __be32 nfsd4_decode_cb_sec(struct nfsd4_compoundargs *argp, struct nfsd4_
 	int nr_secflavs;
 
 	/* callback_sec_params4 */
-	if (xdr_stream_decode_u32(argp->xdr, &nr_secflavs) < 0)
-		return nfserr_bad_xdr;
+	READ_BUF(4);
+	nr_secflavs = be32_to_cpup(p++);
 	if (nr_secflavs)
 		cbs->flavor = (u32)(-1);
 	else
 		/* Is this legal? Be generous, take it to mean AUTH_NONE: */
 		cbs->flavor = 0;
-
 	for (i = 0; i < nr_secflavs; ++i) {
-		if (xdr_stream_decode_u32(argp->xdr, &secflavor) < 0)
-			return nfserr_bad_xdr;
-		switch (secflavor) {
+		READ_BUF(4);
+		dummy = be32_to_cpup(p++);
+		switch (dummy) {
 		case RPC_AUTH_NULL:
-			/* void */
+			/* Nothing to read */
 			if (cbs->flavor == (u32)(-1))
 				cbs->flavor = RPC_AUTH_NULL;
 			break;
 		case RPC_AUTH_UNIX:
-			status = nfsd4_decode_authsys_parms(argp, cbs);
-			if (status)
-				return status;
+			READ_BUF(8);
+			/* stamp */
+			dummy = be32_to_cpup(p++);
+
+			/* machine name */
+			dummy = be32_to_cpup(p++);
+			READ_BUF(dummy);
+			SAVEMEM(machine_name, dummy);
+
+			/* uid, gid */
+			READ_BUF(8);
+			uid = be32_to_cpup(p++);
+			gid = be32_to_cpup(p++);
+
+			/* more gids */
+			READ_BUF(4);
+			dummy = be32_to_cpup(p++);
+			READ_BUF(dummy * 4);
+			if (cbs->flavor == (u32)(-1)) {
+				kuid_t kuid = make_kuid(userns, uid);
+				kgid_t kgid = make_kgid(userns, gid);
+				if (uid_valid(kuid) && gid_valid(kgid)) {
+					cbs->uid = kuid;
+					cbs->gid = kgid;
+					cbs->flavor = RPC_AUTH_UNIX;
+				} else {
+					dprintk("RPC_AUTH_UNIX with invalid"
+						"uid or gid ignoring!\n");
+				}
+			}
 			break;
 		case RPC_AUTH_GSS:
-			status = nfsd4_decode_gss_cb_handles4(argp, cbs);
-			if (status)
-				return status;
+			dprintk("RPC_AUTH_GSS callback secflavor "
+				"not supported!\n");
+			READ_BUF(8);
+			/* gcbp_service */
+			dummy = be32_to_cpup(p++);
+			/* gcbp_handle_from_server */
+			dummy = be32_to_cpup(p++);
+			READ_BUF(dummy);
+			p += XDR_QUADLEN(dummy);
+			/* gcbp_handle_from_client */
+			READ_BUF(4);
+			dummy = be32_to_cpup(p++);
+			READ_BUF(dummy);
 			break;
 		default:
 			dprintk("Illegal callback secflavor\n");
@@ -1557,8 +1593,8 @@ static __be32
 nfsd4_decode_getdeviceinfo(struct nfsd4_compoundargs *argp,
 		struct nfsd4_getdeviceinfo *gdev)
 {
-	struct nfsd4_getdeviceinfo *gdev = &u->getdeviceinfo;
-	__be32 status;
+	DECODE_HEAD;
+	u32 num, i;
 
 	READ_BUF(sizeof(struct nfsd4_deviceid) + 3 * 4);
 	COPYMEM(&gdev->gd_devid, sizeof(struct nfsd4_deviceid));
@@ -5289,6 +5325,22 @@ nfs4svc_decode_compoundargs(struct svc_rqst *rqstp, __be32 *p)
 	args->to_free = NULL;
 	args->ops = args->iops;
 	args->rqstp = rqstp;
+
+	/*
+	 * NFSv4 operation decoders can invoke svc cache lookups
+	 * that trigger svc_defer() when RQ_USEDEFERRAL is set,
+	 * setting RQ_DROPME. This creates two problems:
+	 *
+	 * 1. Non-idempotency: Compounds make it too hard to avoid
+	 *    problems if a request is deferred and replayed.
+	 *
+	 * 2. Session slot leakage (NFSv4.1+): If RQ_DROPME is set
+	 *    during decode but SEQUENCE executes successfully, the
+	 *    session slot will be marked INUSE. The request is then
+	 *    dropped before encoding, so the slot is never released,
+	 *    rendering it permanently unusable by the client.
+	 */
+	clear_bit(RQ_USEDEFERRAL, &rqstp->rq_flags);
 
 	return !nfsd4_decode_compound(args);
 }
