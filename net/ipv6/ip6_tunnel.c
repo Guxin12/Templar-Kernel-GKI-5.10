@@ -880,8 +880,8 @@ static int __ip6_tnl_rcv(struct ip6_tnl *tunnel, struct sk_buff *skb,
 	skb_reset_network_header(skb);
 
 	if (!skb_vlan_inet_prepare(skb, true)) {
-		DEV_STATS_INC(tunnel->dev, rx_length_errors);
-		DEV_STATS_INC(tunnel->dev, rx_errors);
+		tunnel->dev->stats.rx_length_errors++;
+		tunnel->dev->stats.rx_errors++;
 		goto drop;
 	}
 
