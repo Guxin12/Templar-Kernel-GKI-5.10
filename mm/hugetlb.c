@@ -3868,7 +3868,7 @@ int copy_hugetlb_page_range(struct mm_struct *dst, struct mm_struct *src,
 
 #ifdef CONFIG_ARCH_WANT_HUGE_PMD_SHARE
 		/* If the pagetables are shared, there is nothing to do */
-		if (atomic_read(&virt_to_page(dst_pte)->pt_share_count))
+		if (hugetlb_pmd_shared(dst_pte))
 			continue;
 #endif
 
@@ -5447,7 +5447,7 @@ pte_t *huge_pmd_share(struct mm_struct *mm, struct vm_area_struct *vma,
 			spte = huge_pte_offset(svma->vm_mm, saddr,
 					       vma_mmu_pagesize(svma));
 			if (spte) {
-				atomic_inc(&virt_to_page(spte)->pt_share_count);
+				get_page(virt_to_page(spte));
 				break;
 			}
 		}
@@ -5462,7 +5462,7 @@ pte_t *huge_pmd_share(struct mm_struct *mm, struct vm_area_struct *vma,
 				(pmd_t *)((unsigned long)spte & PAGE_MASK));
 		mm_inc_nr_pmds(mm);
 	} else {
-		atomic_dec(&virt_to_page(spte)->pt_share_count);
+		put_page(virt_to_page(spte));
 	}
 	spin_unlock(ptl);
 out:
@@ -5494,15 +5494,22 @@ int huge_pmd_unshare(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	pgd_t *pgd = pgd_offset(mm, *addr);
 	p4d_t *p4d = p4d_offset(pgd, *addr);
 	pud_t *pud = pud_offset(p4d, *addr);
+	struct page *ptpage = virt_to_page(ptep);
+	bool fully_unshared = page_count(ptpage) == 2;
 
 	i_mmap_assert_write_locked(vma->vm_file->f_mapping);
 	if (sz != PMD_SIZE)
 		return 0;
-	if (!atomic_read(&virt_to_page(ptep)->pt_share_count))
+	BUG_ON(page_count(ptpage) == 0);
+	if (!hugetlb_pmd_shared(ptep))
 		return 0;
 
 	pud_clear(pud);
-	tlb_unshare_pmd_ptdesc(tlb, virt_to_page(ptep), *addr);
+	tlb_flush_pmd_range(tlb, *addr & PUD_MASK, PUD_SIZE);
+	tlb->unshared_tables = true;
+	if (fully_unshared)
+		tlb->fully_unshared_tables = true;
+	put_page(ptpage);
 	mm_dec_nr_pmds(mm);
 	/*
 	 * This update of passed address optimizes loops sequentially
@@ -5535,7 +5542,13 @@ void huge_pmd_unshare_flush(struct mmu_gather *tlb, struct vm_area_struct *vma)
 	 */
 	i_mmap_assert_write_locked(vma->vm_file->f_mapping);
 
-	tlb_flush_unshared_tables(tlb);
+	if (tlb->unshared_tables)
+		tlb_flush_mmu_tlbonly(tlb);
+
+	if (tlb->fully_unshared_tables) {
+		tlb_remove_table_sync_one();
+		tlb->fully_unshared_tables = false;
+	}
 }
 #else /* !CONFIG_ARCH_WANT_HUGE_PMD_SHARE */
 pte_t *huge_pmd_share(struct mm_struct *mm, struct vm_area_struct *vma,
