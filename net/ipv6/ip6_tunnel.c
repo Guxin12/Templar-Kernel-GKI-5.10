@@ -835,8 +835,7 @@ static int __ip6_tnl_rcv(struct ip6_tnl *tunnel, struct sk_buff *skb,
 			 bool log_ecn_err)
 {
 	const struct ipv6hdr *ipv6h = ipv6_hdr(skb);
-	int err;
-	unsigned int nh;
+	int nh, err;
 
 	if ((!(tpi->flags & TUNNEL_CSUM) &&
 	     (tunnel->parms.i_flags & TUNNEL_CSUM)) ||
@@ -875,10 +874,12 @@ static int __ip6_tnl_rcv(struct ip6_tnl *tunnel, struct sk_buff *skb,
 		skb->dev = tunnel->dev;
 	}
 
-	skb_reset_network_header(skb);
-nh = skb_network_offset(skb);
+	/* Save the outer header in case skb_vlan_inet_prepare() moves skb->head. */
+	nh = skb_network_header(skb) - skb->head;
 
-	if (skb_vlan_inet_prepare(skb, true)) {
+	skb_reset_network_header(skb);
+
+	if (!skb_vlan_inet_prepare(skb, true)) {
 		DEV_STATS_INC(tunnel->dev, rx_length_errors);
 		DEV_STATS_INC(tunnel->dev, rx_errors);
 		goto drop;

@@ -1262,7 +1262,7 @@ void do_user_addr_fault(struct pt_regs *regs,
 	 * Do not try to do a speculative page fault if the fault was due to
 	 * protection keys since it can't be resolved.
 	 */
-	if (!(hw_error_code & X86_PF_PK)) {
+	if (!(error_code & X86_PF_PK)) {
 		fault = handle_speculative_fault(mm, address, flags, &vma, regs);
 		if (fault != VM_FAULT_RETRY)
 			goto done;
@@ -1369,8 +1369,13 @@ good_area:
 	}
 
 	mmap_read_unlock(mm);
-	if (unlikely(fault & VM_FAULT_ERROR)) {
-		mm_fault_error(regs, hw_error_code, address, fault);
+
+done:
+	if (likely(!(fault & VM_FAULT_ERROR)))
+		return;
+
+	if (fatal_signal_pending(current) && !(error_code & X86_PF_USER)) {
+		no_context(regs, error_code, address, 0, 0);
 		return;
 	}
 

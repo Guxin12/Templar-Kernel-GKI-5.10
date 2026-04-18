@@ -106,7 +106,6 @@ void __init efi_mokvar_table_init(void)
 	unsigned long offset_limit;
 	unsigned long map_size_needed = 0;
 	unsigned long size;
-	struct efi_mokvar_table_entry *mokvar_entry;
 	int err;
 
 	if (!efi_enabled(EFI_MEMMAP))
