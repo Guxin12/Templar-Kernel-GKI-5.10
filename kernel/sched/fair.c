@@ -45,11 +45,11 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_runtime);
  * (CFS  default: 6ms * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_latency			= 5000000ULL;
-static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
+unsigned int sysctl_sched_latency			= 18000000ULL;
+static unsigned int normalized_sysctl_sched_latency	= 18000000ULL;
 #else // CONFIG_SCHED_BORE
- unsigned int sysctl_sched_latency			= 5000000ULL;
- static unsigned int normalized_sysctl_sched_latency	= 5000000ULL;
+ unsigned int sysctl_sched_latency			= 18000000ULL;
+ static unsigned int normalized_sysctl_sched_latency	= 18000000ULL;
 #endif // CONFIG_SCHED_BORE
 EXPORT_SYMBOL_GPL(sysctl_sched_latency);
 
@@ -66,9 +66,9 @@ EXPORT_SYMBOL_GPL(sysctl_sched_latency);
  * (CFS  default SCHED_TUNABLESCALING_LOG  = *(1+ilog(ncpus))
  */
 #ifdef CONFIG_SCHED_BORE
- enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
+enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
 #else // CONFIG_SCHED_BORE
-enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
 #endif // CONFIG_SCHED_BORE
 
 /*
@@ -78,11 +78,11 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (CFS  default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 #ifdef CONFIG_SCHED_BORE
-unsigned int sysctl_sched_min_granularity			= 800000ULL;
-static unsigned int normalized_sysctl_sched_min_granularity	= 800000ULL;
+unsigned int sysctl_sched_min_granularity			= 2500000ULL;
+static unsigned int normalized_sysctl_sched_min_granularity	= 2500000ULL;
 #else // CONFIG_SCHED_BORE
- unsigned int sysctl_sched_min_granularity			= 750000ULL;
- static unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
+ unsigned int sysctl_sched_min_granularity			= 2500000ULL;
+ static unsigned int normalized_sysctl_sched_min_granularity	= 2500000ULL;
 #endif // CONFIG_SCHED_BORE
 EXPORT_SYMBOL_GPL(sysctl_sched_min_granularity);
 
@@ -95,7 +95,17 @@ static unsigned int sched_nr_latency = 8;
  * After fork, child runs first. If set to 0 (default) then
  * parent will (try to) run first.
  */
-unsigned int sysctl_sched_child_runs_first __read_mostly = 1;
+unsigned int sysctl_sched_child_runs_first __read_mostly;
+
+/*
+ * Gaming mode integration with Vorpal governor.
+ */
+int sched_gaming_active __read_mostly;
+EXPORT_SYMBOL_GPL(sched_gaming_active);
+
+#define GAMING_VRUNTIME_STRETCH         4
+#define GAMING_WAKEUP_GRANULARITY_NS    500000
+
 
 /*
  * SCHED_OTHER wake-up granularity.
@@ -115,18 +125,26 @@ unsigned int sysctl_sched_wakeup_granularity			= 1000000UL;
 static unsigned int normalized_sysctl_sched_wakeup_granularity	= 1000000UL;
 #endif // CONFIG_SCHED_BORE
 
-const_debug unsigned int sysctl_sched_migration_cost	= 800000UL;
+const_debug unsigned int sysctl_sched_migration_cost	= 250000UL;
 
 #ifdef CONFIG_SCHED_BORE
 u8   __read_mostly sched_bore                   = 1;
 u8   __read_mostly sched_burst_exclude_kthreads = 1;
-u8   __read_mostly sched_burst_smoothness_long  = 2;
-u8   __read_mostly sched_burst_smoothness_short = 1;
+u8   __read_mostly sched_burst_smoothness_long  = 5;
+u8   __read_mostly sched_burst_smoothness_short = 3;
 u8   __read_mostly sched_burst_fork_atavistic   = 0;
-u8   __read_mostly sched_burst_penalty_offset   = 22;
-uint __read_mostly sched_burst_penalty_scale    = 550;
-uint __read_mostly sched_burst_cache_lifetime   = 12000000;
+u8   __read_mostly sched_burst_penalty_offset   = 12;
+uint __read_mostly sched_burst_penalty_scale    = 280;
+uint __read_mostly sched_burst_cache_lifetime   = 25000000;
 #endif // CONFIG_SCHED_BORE
+
+/*
+ * Vorpal gaming coupling. File-scope global (KMI-safe: not a task_struct /
+ * sched_entity field) written by the Vorpal governor's gaming_mode knob and
+ * read in task_hot() to bias the load balancer toward cache stickiness during
+ * sustained gaming, cutting churny cross-core migrations that surface as
+ * mid-frame load spikes. 0 == normal CFS behaviour.
+ */
 
 int sched_thermal_decay_shift = 4;
 static int __init setup_sched_thermal_decay_shift(char *str)
@@ -1033,6 +1051,13 @@ static void update_curr(struct cfs_rq *cfs_rq)
     update_burst_penalty(curr);
 #endif // CONFIG_SCHED_BORE
 
+/* Gaming mode: stretch vruntime for background tasks */
+        if (unlikely(sched_gaming_active && !entity_is_task(curr))) {
+                curr->vruntime += calc_delta_fair(delta_exec * (GAMING_VRUNTIME_STRETCH - 1), curr);
+        } else if (unlikely(sched_gaming_active && entity_is_task(curr) &&
+                            curr->avg.load_avg < 100)) {
+                curr->vruntime += calc_delta_fair(delta_exec, curr);
+        }
     update_min_vruntime(cfs_rq);
 
     if (entity_is_task(curr)) {
@@ -4736,6 +4761,15 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 
 	ideal_runtime = sched_slice(cfs_rq, curr);
 	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
+	/*
+         * Gaming mode: reduce ideal runtime for background tasks
+         */
+        if (unlikely(sched_gaming_active)) {
+                struct task_struct *p = task_of(curr);
+                if (p->static_prio > DEFAULT_PRIO &&
+                    delta_exec > ideal_runtime / 2)
+                        resched_curr(rq_of(cfs_rq));
+        }
 	trace_android_rvh_check_preempt_tick(current, &ideal_runtime, &skip_preempt,
 			delta_exec, cfs_rq, curr, sysctl_sched_min_granularity);
 	if (skip_preempt)
@@ -5235,6 +5269,20 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
+
+		/*
+		 * Gaming mode: nudge foreground (top-app) tasks to the front
+		 * of the runqueue so the render / game-logic threads schedule
+		 * with less wakeup latency. Foreground is approximated by
+		 * nice <= 0 (static_prio <= DEFAULT_PRIO), the symmetric
+		 * counterpart to the background demotion in check_preempt_tick.
+		 * Reads only, no struct change -> KMI safe. The old comm[]
+		 * string match was a scheduler-hotpath anti-pattern and the
+		 * prio < MAX_RT_PRIO test never fired for CFS tasks; both gone.
+		 */
+		if (unlikely(sched_gaming_active && entity_is_task(se) &&
+			     task_of(se)->static_prio <= DEFAULT_PRIO))
+			se->vruntime -= min_t(u64, se->vruntime, NSEC_PER_MSEC);
 
 		update_load_avg(cfs_rq, se, UPDATE_TG);
 		se_update_runnable(se);
@@ -7975,6 +8023,27 @@ static int task_hot(struct task_struct *p, struct lb_env *env)
 		return 0;
 
 	delta = rq_clock_task(env->src_rq) - p->se.exec_start;
+
+	/*
+	 * Gaming task isolation + anti-thrash. A heavy thread (render / game
+	 * logic using a meaningful slice of its current CPU) is kept off a
+	 * smaller-capacity destination - demoting it to a LITTLE core is a common
+	 * frame-drop source. Light tasks stay migratable so the balancer can pack
+	 * them onto LITTLE as usual. Recently-run tasks also get a widened
+	 * cache-hot window to cut lobby migration churn. This is a bias, not a
+	 * hard pin (active balance can still move it), and reads only - KMI-safe.
+	 *
+	 * Threshold is src_cap >> 3 (~12.5%): per-cluster CPU telemetry showed
+	 * render threads being demoted onto LITTLE (LITTLE saturating 60-90%
+	 * while PRIME sat near-idle), so the isolation now catches moderately
+	 * heavy threads, keeping them on Big/Prime where the work belongs.
+	 */
+	if (sched_gaming_active) {
+		if (capacity_orig_of(env->dst_cpu) < capacity_orig_of(env->src_cpu) &&
+		    task_util(p) > (capacity_orig_of(env->src_cpu) >> 3))
+			return 1;
+		return delta < (s64)sysctl_sched_migration_cost * 2;
+	}
 
 	return delta < (s64)sysctl_sched_migration_cost;
 }
